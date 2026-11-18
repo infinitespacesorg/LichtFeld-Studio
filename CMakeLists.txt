@@ -102,6 +102,12 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/VcpkgProfiles.cmake")
 lfs_validate_vcpkg_profile()
 
+# Fail early, with the fix, when the CUDA toolkit rejects the active MSVC
+# (e.g. CUDA 12.8 with the VS 2026 / MSVC 14.5x toolset). project() would
+# otherwise stop with an unclear CUDA compiler-identification error.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CudaMsvcCompat.cmake")
+lfs_check_cuda_msvc_compat_preproject()
+
 project(LichtFeld-Studio VERSION 0.5.5 LANGUAGES CUDA CXX C)
 
 if(WIN32)
@@ -367,6 +373,8 @@ endif()
 if(MSVC AND MSVC_VERSION LESS 1934)
     message(FATAL_ERROR "LichtFeld Studio needs Visual Studio 2022 17.4 or newer, found MSVC ${MSVC_VERSION}")
 endif()
+# Backstop for the pre-project() probe, using the real MSVC_VERSION.
+lfs_check_cuda_msvc_compat()
 
 # Minimum SM for PTX-only (75=Turing, 80=Ampere, 86=GA102, 89=Ada, 90=Hopper)
 set(BUILD_CUDA_MIN_SM "75" CACHE STRING "Minimum SM for PTX-only builds")
@@ -1465,8 +1473,13 @@ if(BUILD_PORTABLE)
     # Exclusion patterns for system libraries
     # nvcuda.dll is provided by the NVIDIA GPU driver, not the CUDA Toolkit
     set(_PRE_EXCLUDE [[api-ms-.*]] [[ext-ms-.*]] [[API-MS-.*]] [[EXT-MS-.*]] [[nvcuda[.]dll]] [[libcuda[.]so.*]])
+    # Windows system DLLs are matched by their real location only. An unanchored
+    # ".*windows.*" also matched the build tree (build-windows-release, the
+    # vcpkg x64-windows triplet dir), which silently dropped every dependency
+    # resolved there, including cudart64_12.dll and curand64_10.dll (the exe's
+    # own directory is searched first, and the post-build step copies them there).
     set(_POST_EXCLUDE
-            [[.*[Ss]ystem32.*]] [[.*[Ww]indows.*]]
+            [[^[A-Za-z]:.[Ww][Ii][Nn][Dd][Oo][Ww][Ss].]]
             [[/lib/x86_64-linux-gnu/.*]] [[/lib64/ld-linux.*]] [[/usr/lib.*]]
             [[.*ld-linux.*]] [[.*libc[.]so[.].*]] [[.*libpthread.*]]
             [[.*libdl[.]so.*]] [[.*libm[.]so[.].*]] [[.*librt[.]so.*]]
@@ -1524,6 +1537,42 @@ if(BUILD_PORTABLE)
     bundle_runtime_deps("$<TARGET_FILE:${PROJECT_NAME}>" FALSE)
     if(TARGET nvjpeg_ext)
         bundle_runtime_deps("$<TARGET_FILE:nvjpeg_ext>" TRUE)
+    endif()
+
+    if(WIN32)
+        # The CUDA runtime DLLs the binaries import (cudart64_12.dll,
+        # curand64_10.dll; nvcuda.dll is the driver's) must sit beside the exe,
+        # or it fails with 0xC0000135 on machines without the CUDA Toolkit on
+        # PATH. Install them explicitly from the toolkit that was linked, so the
+        # bundle does not depend on how GET_RUNTIME_DEPENDENCIES resolved them.
+        # CUDA 13 moved the DLLs to bin/x64. Only components listed in the
+        # CUDA EULA Attachment A that tools/generate_third_party_licenses.py
+        # knows about (cudart, curand) are bundled here.
+        set(_lfs_cuda_runtime_dlls "")
+        foreach(_lfs_cuda_component IN ITEMS cudart64 curand64)
+            file(GLOB _lfs_cuda_component_dlls
+                    "${CUDAToolkit_BIN_DIR}/${_lfs_cuda_component}_*.dll"
+                    "${CUDAToolkit_BIN_DIR}/x64/${_lfs_cuda_component}_*.dll")
+            if(NOT _lfs_cuda_component_dlls)
+                message(FATAL_ERROR "Portable build: no ${_lfs_cuda_component}_*.dll under "
+                        "CUDAToolkit_BIN_DIR='${CUDAToolkit_BIN_DIR}' (or its x64/ subfolder).")
+            endif()
+            list(APPEND _lfs_cuda_runtime_dlls ${_lfs_cuda_component_dlls})
+        endforeach()
+        message(STATUS "Portable: bundling CUDA runtime DLLs: ${_lfs_cuda_runtime_dlls}")
+        install(FILES ${_lfs_cuda_runtime_dlls} DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT runtime)
+
+        # Fail the install, not the first launch, if the runtime is missing.
+        install(CODE "
+            foreach(_lfs_required IN ITEMS cudart64_ curand64_)
+                file(GLOB _lfs_found \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/\${_lfs_required}*.dll\")
+                if(NOT _lfs_found)
+                    message(FATAL_ERROR \"Portable install is missing \${_lfs_required}*.dll in \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\")
+                endif()
+            endforeach()
+        " COMPONENT runtime)
+        unset(_lfs_cuda_runtime_dlls)
+        unset(_lfs_cuda_component_dlls)
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

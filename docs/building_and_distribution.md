@@ -111,6 +111,34 @@ cmake --install build --prefix ./dist
 ./dist/bin/run_lichtfeld.sh -d /path/to/data -o /path/to/output
 ```
 
+On Windows the install step bundles the CUDA runtime DLLs the application
+imports (`cudart64_*.dll`, `curand64_*.dll`) from `CUDAToolkit_BIN_DIR` into
+`dist\bin`, and fails if they are missing. Check that the folder runs without
+the CUDA Toolkit on `PATH`:
+
+```bat
+set "PATH=C:\Windows\System32"
+dist\bin\LichtFeld-Studio.exe --version
+```
+
+#### Windows: CUDA 12.8 with Visual Studio 2026
+
+CUDA 12.8 rejects the MSVC 14.5x toolset that ships with Visual Studio 2026,
+and configure stops with a message saying so. Build from a shell that selects
+the VS 2022 toolset (install "MSVC v143 - VS 2022 C++ x64/x86 build tools
+(v14.44)" in the Visual Studio Installer if needed), and pin vcpkg to the same
+toolset with the opt-in overlay triplet `cmake/triplets/msvc-14.44`:
+
+```bat
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.44
+set "PKG_CONFIG_PATH="
+cmake --preset windows-release --fresh -DBUILD_PORTABLE=ON "-DVCPKG_OVERLAY_TRIPLETS=%CD%\cmake\triplets\msvc-14.44"
+```
+
+Clear `PKG_CONFIG_PATH` if a system package (for example GStreamer) sets it:
+otherwise pkg-config can pick that package's FFmpeg instead of vcpkg's, and
+configure warns about it. The default triplets are unchanged for other builds.
+
 ## Tests
 
 The tensor comparison tests validate the built-in tensor library against LibTorch as an

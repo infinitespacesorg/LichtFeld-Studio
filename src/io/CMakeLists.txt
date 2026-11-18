@@ -122,6 +122,36 @@ pkg_check_modules(LFS_FFMPEG REQUIRED IMPORTED_TARGET
 )
 pkg_check_modules(LIBPLACEBO REQUIRED IMPORTED_TARGET libplacebo)
 
+# A machine-wide PKG_CONFIG_PATH (for example a system GStreamer install) can
+# put another FFmpeg ahead of vcpkg's, silently linking an older major version
+# (avcodec-61 instead of avcodec-62) that the portable bundle does not ship.
+# Warn only; some setups intentionally use a system FFmpeg.
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(_lfs_ffmpeg_prefix "${LFS_FFMPEG_libavcodec_PREFIX}")
+    if(NOT _lfs_ffmpeg_prefix)
+        list(GET LFS_FFMPEG_LIBRARY_DIRS 0 _lfs_ffmpeg_prefix)
+    endif()
+    file(TO_CMAKE_PATH "${_lfs_ffmpeg_prefix}" _lfs_ffmpeg_prefix_norm)
+    file(TO_CMAKE_PATH "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}" _lfs_vcpkg_prefix_norm)
+    if(WIN32)
+        string(TOLOWER "${_lfs_ffmpeg_prefix_norm}" _lfs_ffmpeg_prefix_norm)
+        string(TOLOWER "${_lfs_vcpkg_prefix_norm}" _lfs_vcpkg_prefix_norm)
+    endif()
+    string(FIND "${_lfs_ffmpeg_prefix_norm}" "${_lfs_vcpkg_prefix_norm}" _lfs_ffmpeg_in_vcpkg)
+    if(NOT _lfs_ffmpeg_in_vcpkg EQUAL 0)
+        message(WARNING
+            "pkg-config found libavcodec ${LFS_FFMPEG_libavcodec_VERSION} at "
+            "'${_lfs_ffmpeg_prefix}', outside vcpkg's '${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}'. "
+            "A system PKG_CONFIG_PATH (e.g. GStreamer's) is probably taking precedence. "
+            "Clear PKG_CONFIG_PATH and reconfigure with --fresh to use vcpkg's FFmpeg. "
+            "PKG_CONFIG_PATH='$ENV{PKG_CONFIG_PATH}'")
+    endif()
+    unset(_lfs_ffmpeg_prefix)
+    unset(_lfs_ffmpeg_prefix_norm)
+    unset(_lfs_vcpkg_prefix_norm)
+    unset(_lfs_ffmpeg_in_vcpkg)
+endif()
+
 add_library(lfs_video STATIC
         include/io/video/video_encoder_interface.hpp
         include/io/video/video_export_options.hpp
